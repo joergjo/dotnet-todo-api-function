@@ -1,9 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.Cosmos;
 using Microsoft.Azure.Documents;
 using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.WebJobs;
@@ -20,10 +22,10 @@ namespace TodoApi
             string id,
             [CosmosDB(
                 databaseName: "todos",
-                collectionName: "items",
+                containerName: "items",
                 Id = "{id}",
                 PartitionKey = "{id}",
-                ConnectionStringSetting = "CosmosDBConnection")] TodoItem item,
+                Connection = "CosmosDBConnection")] TodoItem item,
             ILogger log)
         {
             log.LogInformation("Looking up todo '{id}'", id);
@@ -41,9 +43,9 @@ namespace TodoApi
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "todos")] HttpRequest request,
             [CosmosDB(
                 databaseName: "todos",
-                collectionName: "items",
+                containerName: "items",
                 SqlQuery = "SELECT TOP 100 * FROM c",
-                ConnectionStringSetting = "CosmosDBConnection")] IEnumerable<TodoItem> items,
+                Connection = "CosmosDBConnection")] IEnumerable<TodoItem> items,
             ILogger log)
             {
                 log.LogInformation("Looking up todos, found {count}", items.Count());
@@ -56,11 +58,11 @@ namespace TodoApi
             [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "todos")] TodoItem item,
             [CosmosDB(
                 databaseName: "todos",
-                collectionName: "items",
-                ConnectionStringSetting = "CosmosDBConnection")] IAsyncCollector<TodoItem> collector,
+                containerName: "items",
+                Connection = "CosmosDBConnection")] IAsyncCollector<TodoItem> collector,
             ILogger log)
         {
-            item.Id = Guid.NewGuid().ToString();
+            item.Id = Guid.NewGuid();
             log.LogInformation("Creating new todo");
             await collector.AddAsync(item);
             log.LogInformation("Created todo {id}", item.Id);
@@ -72,9 +74,9 @@ namespace TodoApi
             [HttpTrigger(AuthorizationLevel.Anonymous, "put", Route = "todos/{id}")] TodoItem item,
             [CosmosDB(
                 databaseName: "todos",
-                collectionName: "items",
+                containerName: "items",
                 Id = "{id}",
-                ConnectionStringSetting = "CosmosDBConnection")] IAsyncCollector<TodoItem> collector,
+                Connection = "CosmosDBConnection")] IAsyncCollector<TodoItem> collector,
             ILogger log)
         {
             log.LogInformation("Updating todo");
@@ -89,15 +91,24 @@ namespace TodoApi
             string id,
             [CosmosDB(
                 databaseName: "todos",
-                collectionName: "items",
-                ConnectionStringSetting = "CosmosDBConnection")] DocumentClient client,
+                containerName: "items",
+                Connection = "CosmosDBConnection")] CosmosClient client,
             ILogger log)
         {
             log.LogInformation("Deleting todo '{id}'", id);
-            var uri = UriFactory.CreateDocumentUri("todos", "items", id);
-            await client.DeleteDocumentAsync(uri, new RequestOptions { PartitionKey = new PartitionKey(id) });
-            log.LogInformation("Deleted todo {id}", id);
-            return new StatusCodeResult(StatusCodes.Status204NoContent);
+            var response = await client.GetContainer("todos", "items").DeleteItemAsync<TodoItem>(id, new PartitionKey(id));
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.NoContent:
+                    log.LogInformation("Deleted todo {id}", id);
+                    return new StatusCodeResult(StatusCodes.Status204NoContent);
+                case HttpStatusCode.NotFound:
+                    log.LogInformation("Cannot find todo '{id}'", id);
+                    return new NotFoundResult();
+                default:
+                    log.LogError("Error deleting todo {id}, status code {status}", response.StatusCode);
+                    return new StatusCodeResult(StatusCodes.Status500InternalServerError);
+            }
         }
     }
 }
